@@ -1,0 +1,1948 @@
+-- Remote Log: captura remotes e bindables, com nome, informações e args.
+
+local ambiente = getgenv and getgenv() or _G
+if ambiente.__RemoteLogFechar then
+    pcall(ambiente.__RemoteLogFechar)
+end
+
+local UIS = game:GetService("UserInputService")
+
+local MAX_CHAMADAS = 50
+local MAX_FILA = 800
+local MAX_TEXTO = 4000
+
+local ativo, pausado = true, false
+local filtro = ""
+local fila = {}
+local conexoes = {}
+local excluidos = {} -- [Instance] = caminho completo
+local bloqueados = {} -- [Instance] = caminho completo
+local abrirModal, fecharModal
+
+local ABAS = {
+    { id = "saida", nome = "Outgoing" },
+    { id = "entrada", nome = "Incoming" },
+    { id = "bind", nome = "Bindable" },
+}
+local abaAtual = "saida"
+local grupos = { saida = {}, entrada = {}, bind = {} }
+local totalAba = { saida = 0, entrada = 0, bind = 0 }
+local seqLinha, seqCartao = 0, 0
+local selecionado = nil
+local cartoes = {}
+
+local METODOS = {
+    RemoteEvent = { FireServer = "saida" },
+    UnreliableRemoteEvent = { FireServer = "saida" },
+    RemoteFunction = { InvokeServer = "saida" },
+    BindableEvent = { Fire = "bind" },
+    BindableFunction = { Invoke = "bind" },
+}
+local NOMES_METODO = { FireServer = true, InvokeServer = true, Fire = true, Invoke = true }
+
+local COR = {
+    fundo = Color3.fromRGB(10, 8, 16),
+    painel = Color3.fromRGB(18, 14, 28),
+    item = Color3.fromRGB(28, 22, 42),
+    linha = Color3.fromRGB(36, 28, 54),
+    violeta = Color3.fromRGB(150, 95, 255),
+    texto = Color3.fromRGB(235, 229, 247),
+    apagado = Color3.fromRGB(145, 135, 168),
+    vermelho = Color3.fromRGB(235, 95, 120),
+}
+
+local COR_TIPO = {
+    string = Color3.fromRGB(150, 225, 140),
+    number = Color3.fromRGB(245, 200, 110),
+    boolean = Color3.fromRGB(245, 135, 175),
+    ["nil"] = Color3.fromRGB(145, 135, 168),
+    Instance = Color3.fromRGB(110, 205, 245),
+    table = Color3.fromRGB(190, 160, 255),
+}
+
+local SIGLA = {
+    RemoteEvent = { "RE", Color3.fromRGB(150, 95, 255) },
+    UnreliableRemoteEvent = { "UR", Color3.fromRGB(235, 130, 90) },
+    RemoteFunction = { "RF", Color3.fromRGB(70, 170, 235) },
+    BindableEvent = { "BE", Color3.fromRGB(90, 190, 130) },
+    BindableFunction = { "BF", Color3.fromRGB(210, 170, 70) },
+}
+
+local CLASSE_COM_RETORNO = { RemoteFunction = true, BindableFunction = true }
+
+-- PNGs embutidos: gravados na pasta do executor e carregados com getcustomasset.
+local PNG_RAIO = "\x89\x50\x4E\x47\x0D\x0A\x1A\x0A\x00\x00\x00\x0D\x49\x48\x44\x52\x00\x00\x00\x11\x00\x00\x00\x11\x08\x06\x00\x00\x00\x3B\x6D\x47\xFA\x00\x00\x01\x34\x49\x44\x41\x54\x78\xDA\xBD\x93\x31\x4B\xC3\x50\x14\x85\xCF\x7B\x09\x1A\x15\xBA\x88\x53\xBA\x69\x5A\x9C\x84\xD4\x25\x63\x7F\x80\xBF\xA1\x12\xC1\xBA\x77\xCC\xAC\xA3\xB3\x0E\xAD\xF4\x17\x38\x88\xB3\x63\xB6\x74\x14\x93\xBA\x25\x83\x96\x50\x10\x84\x10\x9A\x77\x1D\x4A\xA1\x69\x5F\x42\x2A\xE2\xDD\xDE\xE5\xF0\x3D\xEE\x39\xF7\x02\x7F\x50\x4C\xD6\xF4\x06\x46\x87\x18\xB7\x72\x42\xA2\x98\xA0\x0C\x5B\xF6\xAB\xBF\xAA\x57\xE5\x6C\x7E\x67\xE8\x8A\xB6\xDC\xF9\xFA\x26\x7C\x4C\x31\x94\xA9\xD7\x20\xA3\x7E\xD3\x3A\xAC\xE7\x01\x00\xF0\x39\x15\x49\xCB\x7E\xF3\xA5\x5F\xAE\x36\x04\x47\x47\x26\x24\x86\xA7\x22\x4F\xB8\xA4\x77\x56\xE0\x9E\x5B\xD9\xD8\xF0\xF1\x98\x6A\x7B\xEB\x7E\x07\xD1\xEC\x05\x60\x3E\x23\x8A\x4D\xDB\x77\x0A\x3D\x19\xF5\x9B\x96\x0C\x00\x00\x86\xAE\xB6\x01\xB4\xE7\xB0\x92\x71\x04\x87\x55\xB6\x0F\xE1\x24\x03\x17\xCC\x29\x4D\x87\x0B\xB8\x41\x94\xDD\x03\xC0\xCE\x16\xBA\xF5\x03\x25\x07\x48\x52\xD1\x33\x2F\x02\xB7\xD2\xB2\x01\x80\xF7\xD0\x08\x8F\x74\x55\x5F\xBC\xC7\x61\x7A\x63\xDA\x63\xA7\x6A\x3A\x8B\x4C\xF7\x97\x4D\x55\x66\x74\xBB\x49\xC4\x00\x00\x6D\x9B\x69\x73\x40\x16\x81\x94\xAB\x93\xCB\xF7\x78\x63\x48\x6D\x97\x21\x9C\x64\x20\x46\x5D\xD9\xBD\x54\x1B\x07\x40\x92\x8A\xDE\xE9\xB9\xFF\xFC\xEB\xF3\xF6\x06\x8D\x6B\xFC\x67\xFD\x00\x52\xAC\x68\x5A\xD4\x4D\xE3\x2A\x00\x00\x00\x00\x49\x45\x4E\x44\xAE\x42\x60\x82"
+local PNG_CUBO = "\x89\x50\x4E\x47\x0D\x0A\x1A\x0A\x00\x00\x00\x0D\x49\x48\x44\x52\x00\x00\x00\x12\x00\x00\x00\x12\x08\x06\x00\x00\x00\x56\xCE\x8E\x57\x00\x00\x02\x16\x49\x44\x41\x54\x78\xDA\xED\x92\x3F\x48\x94\x01\x18\x87\x9F\xF7\xFB\xEE\xBE\xCF\xB3\xEE\x83\xBA\xCB\xF2\x4E\x28\x33\x31\xFA\x63\x39\x38\x35\x44\x0E\x67\xD0\x1F\xC5\xB9\xF1\x6C\xC9\x06\x6D\x09\x82\xD6\x68\x28\xA7\x5C\xD4\x49\x68\x0B\x24\x87\xD4\x48\x42\x48\x92\x8A\x82\xCC\xB4\xB4\x2C\xBD\xCF\x50\x4F\x4B\x4F\xAF\xCF\xD3\x7B\x1B\x4C\xA9\x6C\x70\xAF\xDF\xFA\xC2\xC3\x8F\xDF\xFB\xC0\xFF\x00\xDC\x8A\xB5\x96\x34\x56\xB4\x44\xFF\x76\x93\x2D\x01\x4E\x37\x57\x00\x97\x04\xAD\x42\x71\x41\x9A\x24\x23\x6D\xF5\x3D\xF1\xC4\x26\x50\x63\x45\x4B\x54\xFD\x5A\x2D\xA2\xE5\x00\x0A\xED\xA8\x24\x54\xB8\x1A\xF4\x6F\xAF\x29\x0D\x97\x11\xD9\x56\x80\xB7\xEA\x31\x3C\x37\xC8\xBB\xAF\x6F\x9F\x02\x37\x1B\x3A\x2F\xB6\x03\x98\xEB\xA0\x58\x71\x55\x44\x8C\xEC\xF5\x7D\xCE\xFE\xB3\xA6\x98\xC7\xD3\x2B\x4B\xD3\x22\x84\xF3\x73\xA3\x97\x4F\x44\x4E\xB2\xC3\xDE\x09\x80\xCF\xF0\xB1\x3B\x37\x9F\x80\x2F\xB7\xC0\x5D\x74\xAD\xCA\x92\x73\x4F\xBA\xDF\x77\x2C\x6C\x80\xBA\x47\xEF\x27\x63\xC5\xE7\xB3\xDF\xBC\xB9\x54\x7A\x65\xE9\x01\xC2\x07\x81\x63\x0B\x99\x94\x7F\x6C\x7E\x24\x2F\x68\x39\x04\x2D\x07\x6F\xD5\x63\x70\xF6\x35\x03\xC9\x57\xE3\x20\xAE\x28\x33\x5D\x23\x1D\x43\x3E\x80\xDB\x95\xCD\xB5\x22\x5A\xA7\xAA\x01\x00\x51\x32\xAA\xD8\x2A\x5C\xB0\x0C\xBF\xB9\x9C\xCD\xBC\xE9\x9B\xEC\x75\x00\x07\x98\x07\x12\x02\x4E\x28\x27\x54\x93\x4C\x27\x01\xDA\x7D\x6B\x7D\xF4\x50\x5E\x60\x4F\xA9\x6D\xE6\x00\xF0\x79\x61\xEC\x00\x22\xCF\xF7\x06\x0B\xCD\xD2\x70\x19\xEE\xE2\xC4\xE1\x17\x53\xFD\x59\x15\xB9\x26\x4A\x34\x94\x13\xAA\x3B\x1A\x2A\x23\x1C\xD8\xC5\xBD\x91\xBB\x07\x01\x7C\x6B\xC3\x1A\xAD\x53\xE9\x2F\x2F\x81\x22\x94\x08\xC2\x1C\x68\x04\x28\xB7\x4D\x9B\x42\xA7\x08\xDB\xB4\x8D\xBE\xC9\xDE\x2A\xA0\xFC\x54\x41\x6C\xD3\x67\x0D\x80\x2B\x5D\xF1\x81\x6C\xD6\xEC\x57\x95\x23\x7E\xD3\x8A\x0B\x9C\x01\x66\x93\xDF\xA7\xFF\x74\xC5\xB1\x0C\x6B\x63\xD7\x99\xF4\x34\xAA\x32\xB4\x01\xFA\x33\xAA\x04\x51\x19\x4E\x2D\xA7\x6E\x74\x7E\xEA\xC0\x5D\x9C\xF8\xED\xEE\xAD\x7A\x7C\x9C\x1F\xE5\x71\xE2\xE1\xB8\x0A\x77\x36\x09\xF9\xD3\xA5\x08\x80\x64\xC4\xAD\xEF\x89\x27\x7E\x91\xB1\x5A\x94\x47\x08\x51\x85\x12\xA0\x09\x95\xB6\x86\xAE\xDA\x67\x5B\x36\x7B\xDD\x6E\x41\x9D\xB5\xCA\x92\x58\x07\xFC\x03\xF9\x01\x97\x36\xD0\x9B\x12\x4A\x4A\x98\x00\x00\x00\x00\x49\x45\x4E\x44\xAE\x42\x60\x82"
+local ICONE_IMAGEM = {}
+
+do
+    local PASTA = "One Hub/RemoteLog"
+    local function carregar(nome, png)
+        local arquivo = PASTA .. "/" .. nome .. ".png"
+        writefile(arquivo, png)
+        return getcustomasset(arquivo)
+    end
+
+    local ok, raio, cubo = pcall(function()
+        for _, pasta in ipairs({ "One Hub", PASTA }) do
+            if not isfolder(pasta) then
+                makefolder(pasta)
+            end
+        end
+        return carregar("RemoteEvent", PNG_RAIO), carregar("RemoteFunction", PNG_CUBO)
+    end)
+    if ok then
+        ICONE_IMAGEM.RemoteEvent = raio
+        ICONE_IMAGEM.UnreliableRemoteEvent = raio
+        ICONE_IMAGEM.RemoteFunction = cubo
+    else
+        warn("[Remote Log] icons: " .. tostring(raio))
+    end
+end
+
+-- Helpers de UI
+local function criar(classe, props, pai)
+    local obj = Instance.new(classe)
+    for k, v in pairs(props) do
+        obj[k] = v
+    end
+    obj.Parent = pai
+    return obj
+end
+
+local function canto(obj, raio)
+    criar("UICorner", { CornerRadius = UDim.new(0, raio or 6) }, obj)
+end
+
+local function rotulo(props, pai)
+    local base = {
+        BackgroundTransparency = 1,
+        TextColor3 = COR.texto,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+    }
+    for k, v in pairs(props) do
+        base[k] = v
+    end
+    return criar("TextLabel", base, pai)
+end
+
+local function botao(props, pai)
+    local base = {
+        BackgroundColor3 = COR.item,
+        BorderSizePixel = 0,
+        AutoButtonColor = true,
+        TextColor3 = COR.texto,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+    }
+    for k, v in pairs(props) do
+        base[k] = v
+    end
+    local b = criar("TextButton", base, pai)
+    canto(b, 5)
+    return b
+end
+
+local function rolagem(props, pai)
+    local base = {
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = COR.violeta,
+    }
+    for k, v in pairs(props) do
+        base[k] = v
+    end
+    local s = criar("ScrollingFrame", base, pai)
+    criar("UIListLayout", {
+        Padding = UDim.new(0, 5),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, s)
+    return s
+end
+
+local function copiar(b, texto)
+    if setclipboard then
+        setclipboard(texto)
+    end
+    local original = b.Text
+    if original == "Copied!" then
+        return
+    end
+    b.Text = "Copied!"
+    task.delay(0.8, function()
+        if b.Parent then
+            b.Text = original
+        end
+    end)
+end
+
+-- Formatação
+local function caminho(inst)
+    local partes = {}
+    local atual = inst
+    while atual and atual.Parent ~= game do
+        table.insert(partes, 1, (":WaitForChild(%q)"):format(atual.Name))
+        atual = atual.Parent
+    end
+    if not atual then
+        return "-- outside game: " .. inst.Name
+    end
+    return ("game:GetService(%q)"):format(atual.ClassName) .. table.concat(partes)
+end
+
+local function numero(n)
+    if n ~= n then return "0/0" end
+    if n == math.huge then return "math.huge" end
+    if n == -math.huge then return "-math.huge" end
+    return tostring(n)
+end
+
+local function chaveTabela(k, formatar, nivel)
+    if type(k) == "string" and k:match("^[%a_][%w_]*$") then
+        return k
+    end
+    return "[" .. formatar(k, nivel + 1) .. "]"
+end
+
+local function tabelaTexto(v, nivel, formatar, limite)
+    if next(v) == nil then
+        return "{}"
+    end
+    if nivel >= limite then
+        return "{...}"
+    end
+
+    local recuo = string.rep("    ", nivel + 1)
+    local partes, indice, qtd = {}, 1, 0
+    for k, val in next, v do
+        qtd += 1
+        if qtd > 150 then
+            table.insert(partes, recuo .. "-- more items omitted")
+            break
+        end
+        if k == indice then
+            indice += 1
+            table.insert(partes, recuo .. formatar(val, nivel + 1))
+        else
+            table.insert(partes, recuo .. chaveTabela(k, formatar, nivel) .. " = " .. formatar(val, nivel + 1))
+        end
+    end
+    return "{\n" .. table.concat(partes, ",\n") .. "\n" .. string.rep("    ", nivel) .. "}"
+end
+
+local function mostrar(v, nivel)
+    nivel = nivel or 0
+    local t = typeof(v)
+    if t == "table" then return tabelaTexto(v, nivel, mostrar, 6) end
+    if t == "string" then return string.format("%q", v) end
+    if t == "number" then return numero(v) end
+    if t == "Instance" then return v:GetFullName() end
+    local ok, s = pcall(tostring, v)
+    return ok and s or ("<" .. t .. ">")
+end
+
+-- Gera Luau válido para colar e executar
+local function serializar(v, nivel)
+    nivel = nivel or 0
+    local t = typeof(v)
+
+    if t == "string" then return string.format("%q", v) end
+    if t == "number" then return numero(v) end
+    if t == "boolean" or t == "nil" or t == "EnumItem" then return tostring(v) end
+    if t == "table" then return tabelaTexto(v, nivel, serializar, 8) end
+    if t == "Instance" then
+        if v == game then return "game" end
+        if v:IsDescendantOf(game) then return caminho(v) end
+        return ("nil --[[ no parent: %s ]]"):format(v.Name)
+    end
+    if t == "Vector3" then return ("Vector3.new(%s, %s, %s)"):format(v.X, v.Y, v.Z) end
+    if t == "Vector2" then return ("Vector2.new(%s, %s)"):format(v.X, v.Y) end
+    if t == "CFrame" then return ("CFrame.new(%s)"):format(table.concat({ v:GetComponents() }, ", ")) end
+    if t == "Color3" then return ("Color3.new(%s, %s, %s)"):format(v.R, v.G, v.B) end
+    if t == "BrickColor" then return ("BrickColor.new(%q)"):format(v.Name) end
+    if t == "UDim" then return ("UDim.new(%s, %s)"):format(v.Scale, v.Offset) end
+    if t == "UDim2" then
+        return ("UDim2.new(%s, %s, %s, %s)"):format(v.X.Scale, v.X.Offset, v.Y.Scale, v.Y.Offset)
+    end
+    return ("nil --[[ %s: %s ]]"):format(t, tostring(v))
+end
+
+local function inline(v, nivel)
+    nivel = nivel or 0
+    if typeof(v) ~= "table" then
+        return (mostrar(v):gsub("\n", " "))
+    end
+    if next(v) == nil then
+        return "{}"
+    end
+    if nivel >= 3 then
+        return "{...}"
+    end
+    local partes, indice, qtd = {}, 1, 0
+    for k, val in next, v do
+        qtd += 1
+        if qtd > 12 then
+            table.insert(partes, "...")
+            break
+        end
+        if k == indice then
+            indice += 1
+            table.insert(partes, inline(val, nivel + 1))
+        else
+            table.insert(partes, chaveTabela(k, mostrar, nivel) .. " = " .. inline(val, nivel + 1))
+        end
+    end
+    return "{" .. table.concat(partes, ", ") .. "}"
+end
+
+local CABECALHO = "--- Generated by Remote Log\n\n"
+
+local function declararRemote(remote)
+    if remote:IsDescendantOf(game) then
+        return "local Remote = " .. caminho(remote) .. "\n"
+    end
+    return ("local Remote\nfor _, i in getnilinstances() do\n    if i.Name == %q and i.ClassName == %q then\n        Remote = i\n    end\nend\n"):format(remote.Name, remote.ClassName)
+end
+
+local function argsEmLinhas(c)
+    if c.args.n == 0 then
+        return ""
+    end
+    local linhas = {}
+    for i = 1, c.args.n do
+        linhas[i] = "    " .. serializar(c.args[i], 1)
+    end
+    return "\n" .. table.concat(linhas, ",\n") .. "\n"
+end
+
+local function codigoChamada(grupo, c)
+    local base = CABECALHO .. declararRemote(grupo.remote)
+    local args = argsEmLinhas(c)
+    if c.metodo == "OnClientEvent" then
+        local sep = args ~= "" and "," or ""
+        return base .. "firesignal(Remote.OnClientEvent" .. sep .. args .. ")"
+    end
+    if c.metodo == "OnClientInvoke" then
+        return base .. 'getcallbackvalue(Remote, "OnClientInvoke")(' .. args .. ")"
+    end
+    return base .. "Remote:" .. c.metodo .. "(" .. args .. ")"
+end
+
+local function codigoInterceptar(grupo, c)
+    local base = CABECALHO .. declararRemote(grupo.remote) .. "\n"
+    if grupo.aba == "entrada" then
+        return base .. [[Remote.OnClientEvent:Connect(function(...)
+    print("Received", ...)
+end)]]
+    end
+    return base .. ([[local old
+old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    if self == Remote and getnamecallmethod() == %q then
+        local args = table.pack(...)
+        -- modify args here
+        return old(self, table.unpack(args, 1, args.n))
+    end
+    return old(self, ...)
+end))]]):format(c.metodo)
+end
+
+-- Janela
+local gui = criar("ScreenGui", {
+    Name = "RemoteLog",
+    ResetOnSpawn = false,
+    DisplayOrder = 999,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets,
+}, gethui and gethui() or game:GetService("CoreGui"))
+
+local TAMANHO = UDim2.fromScale(0.92, 0.8)
+
+local main = criar("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = TAMANHO,
+    BackgroundColor3 = COR.fundo,
+    BorderSizePixel = 0,
+    Active = true,
+}, gui)
+canto(main, 10)
+criar("UIStroke", { Color = COR.violeta, Transparency = 0.55 }, main)
+local limiteMain = criar("UISizeConstraint", { MaxSize = Vector2.new(780, 470) }, main)
+
+local topo = criar("Frame", {
+    Size = UDim2.new(1, 0, 0, 42),
+    BackgroundTransparency = 1,
+}, main)
+
+rotulo({
+    Position = UDim2.fromOffset(14, 0),
+    Size = UDim2.new(1, -310, 1, 0),
+    Text = "Remote Log",
+    TextColor3 = COR.violeta,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    Font = Enum.Font.GothamBold,
+    TextSize = 15,
+}, topo)
+
+local barra = criar("Frame", {
+    AnchorPoint = Vector2.new(1, 0.5),
+    Position = UDim2.new(1, -8, 0.5, 0),
+    Size = UDim2.fromOffset(296, 26),
+    BackgroundTransparency = 1,
+}, topo)
+criar("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, barra)
+
+local function botaoTopo(texto, largura, ordem)
+    return botao({
+        Size = UDim2.fromOffset(largura, 26),
+        Text = texto,
+        LayoutOrder = ordem,
+    }, barra)
+end
+
+local btnExcl = botaoTopo("Filtered 0", 88, 1)
+local btnPausar = botaoTopo("Pause", 60, 2)
+local btnLimpar = botaoTopo("Clear", 58, 3)
+local btnMin = botaoTopo("–", 28, 4)
+local btnFechar = botaoTopo("X", 28, 5)
+btnFechar.TextColor3 = COR.vermelho
+
+local corpo = criar("Frame", {
+    Position = UDim2.fromOffset(0, 42),
+    Size = UDim2.new(1, 0, 1, -42),
+    BackgroundTransparency = 1,
+}, main)
+
+local linhaAbas = criar("Frame", {
+    Position = UDim2.fromOffset(8, 0),
+    Size = UDim2.new(1, -16, 0, 28),
+    BackgroundTransparency = 1,
+}, corpo)
+criar("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, linhaAbas)
+
+local botoesAba = {}
+
+-- Coluna esquerda
+local esquerda = criar("Frame", {
+    Position = UDim2.fromOffset(8, 34),
+    Size = UDim2.new(0.34, -8, 1, -42),
+    BackgroundTransparency = 1,
+}, corpo)
+
+local caixaFiltro = criar("TextBox", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundColor3 = COR.painel,
+    BorderSizePixel = 0,
+    ClearTextOnFocus = false,
+    PlaceholderText = "Search remote...",
+    PlaceholderColor3 = COR.apagado,
+    Text = "",
+    TextColor3 = COR.texto,
+    Font = Enum.Font.Gotham,
+    TextSize = 12,
+}, esquerda)
+canto(caixaFiltro)
+
+local listaRemotes = rolagem({
+    Position = UDim2.fromOffset(0, 34),
+    Size = UDim2.new(1, 0, 1, -34),
+}, esquerda)
+
+-- Coluna direita
+local direita = criar("Frame", {
+    Position = UDim2.new(0.34, 8, 0, 34),
+    Size = UDim2.new(0.66, -16, 1, -42),
+    BackgroundColor3 = COR.painel,
+    BorderSizePixel = 0,
+}, corpo)
+canto(direita, 8)
+
+local vazio = rotulo({
+    Size = UDim2.fromScale(1, 1),
+    Text = "Select a remote from the list",
+    TextColor3 = COR.apagado,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextSize = 13,
+}, direita)
+
+local detalhe = criar("Frame", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    Visible = false,
+}, direita)
+
+local lblNome = rotulo({
+    Position = UDim2.fromOffset(12, 8),
+    Size = UDim2.new(1, -176, 0, 18),
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    Font = Enum.Font.GothamBold,
+    TextSize = 15,
+}, detalhe)
+
+local lblInfo = rotulo({
+    Position = UDim2.fromOffset(12, 27),
+    Size = UDim2.new(1, -24, 0, 14),
+    TextColor3 = COR.violeta,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    TextSize = 11,
+}, detalhe)
+
+local lblCaminho = rotulo({
+    Position = UDim2.fromOffset(12, 42),
+    Size = UDim2.new(1, -24, 0, 14),
+    TextColor3 = COR.apagado,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    Font = Enum.Font.Code,
+    TextSize = 11,
+}, detalhe)
+
+local btnCopiarRemote = botao({
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -72, 0, 6),
+    Size = UDim2.fromOffset(92, 22),
+    Text = "Copy code",
+    TextSize = 11,
+}, detalhe)
+
+local btnExcluir = botao({
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -8, 0, 6),
+    Size = UDim2.fromOffset(60, 22),
+    Text = "Ignore",
+    TextColor3 = COR.vermelho,
+    TextSize = 11,
+}, detalhe)
+
+local listaCartoes = rolagem({
+    Position = UDim2.fromOffset(8, 62),
+    Size = UDim2.new(1, -12, 1, -68),
+}, detalhe)
+
+-- Painel de excluídos
+local painelExcl = criar("Frame", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    Visible = false,
+}, direita)
+
+rotulo({
+    Position = UDim2.fromOffset(12, 8),
+    Size = UDim2.new(1, -120, 0, 22),
+    Text = "Ignored & blocked",
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+}, painelExcl)
+
+local btnLimparExcl = botao({
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -8, 0, 8),
+    Size = UDim2.fromOffset(84, 22),
+    Text = "Clear list",
+    TextSize = 11,
+}, painelExcl)
+
+local listaExcl = rolagem({
+    Position = UDim2.fromOffset(8, 38),
+    Size = UDim2.new(1, -12, 1, -44),
+}, painelExcl)
+
+-- Cartões de chamada
+local function linhaArg(pai, indice, valor, altura)
+    local tipo = typeof(valor)
+    local linha = criar("Frame", {
+        Size = UDim2.new(1, 0, 0, altura),
+        BackgroundColor3 = COR.linha,
+        BorderSizePixel = 0,
+        LayoutOrder = indice,
+    }, pai)
+    canto(linha, 4)
+
+    rotulo({
+        Position = UDim2.fromOffset(8, 0),
+        Size = UDim2.new(0, 20, 1, 0),
+        Text = tostring(indice),
+        TextColor3 = COR.apagado,
+        Font = Enum.Font.Code,
+    }, linha)
+
+    local ok, texto = pcall(inline, valor)
+    rotulo({
+        Position = UDim2.fromOffset(30, 0),
+        Size = UDim2.new(1, -100, 1, 0),
+        Text = ok and texto or ("<" .. tipo .. ">"),
+        TextColor3 = COR_TIPO[tipo] or COR.texto,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Font = Enum.Font.Code,
+    }, linha)
+
+    rotulo({
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -8, 0, 0),
+        Size = UDim2.new(0, 62, 1, 0),
+        Text = tipo,
+        TextColor3 = COR.apagado,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextSize = 11,
+    }, linha)
+end
+
+local function adicionarCartao(grupo, c)
+    seqCartao += 1
+    local visiveis = math.min(c.args.n, 6)
+    local altura = 36 + visiveis * 30
+    if c.args.n == 0 then
+        altura = 56
+    elseif c.args.n > visiveis then
+        altura += 20
+    end
+
+    local cartao = criar("TextButton", {
+        Size = UDim2.new(1, -6, 0, altura),
+        BackgroundColor3 = COR.item,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        LayoutOrder = -seqCartao,
+    }, listaCartoes)
+    canto(cartao)
+    criar("UIPadding", {
+        PaddingLeft = UDim.new(0, 8),
+        PaddingRight = UDim.new(0, 8),
+        PaddingTop = UDim.new(0, 6),
+        PaddingBottom = UDim.new(0, 8),
+    }, cartao)
+    criar("UIListLayout", {
+        Padding = UDim.new(0, 4),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, cartao)
+    cartao.MouseButton1Click:Connect(function()
+        abrirModal(grupo, c)
+    end)
+
+    local cabeca = criar("Frame", {
+        Size = UDim2.new(1, 0, 0, 22),
+        BackgroundTransparency = 1,
+        LayoutOrder = 0,
+    }, cartao)
+
+    rotulo({
+        Size = UDim2.new(1, -124, 1, 0),
+        Text = c.metodo .. "  ·  " .. c.origem,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Font = Enum.Font.GothamMedium,
+    }, cabeca)
+
+    rotulo({
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -62, 0, 0),
+        Size = UDim2.fromOffset(58, 22),
+        Text = os.date("%H:%M:%S", c.tempo),
+        TextColor3 = COR.apagado,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        TextSize = 11,
+    }, cabeca)
+
+    local btnCopiar = botao({
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 1),
+        Size = UDim2.fromOffset(56, 20),
+        BackgroundColor3 = COR.linha,
+        Text = "Copy",
+        TextSize = 11,
+    }, cabeca)
+    btnCopiar.MouseButton1Click:Connect(function()
+        copiar(btnCopiar, codigoChamada(grupo, c))
+    end)
+
+    if c.args.n == 0 then
+        rotulo({
+            Size = UDim2.new(1, 0, 0, 16),
+            Text = "No arguments",
+            TextColor3 = COR.apagado,
+            LayoutOrder = 1,
+        }, cartao)
+    end
+    for i = 1, visiveis do
+        local ok, err = pcall(linhaArg, cartao, i, c.args[i], 26)
+        if not ok then
+            warn("[Remote Log] arg " .. i .. ": " .. tostring(err))
+        end
+    end
+    if c.args.n > visiveis then
+        rotulo({
+            Size = UDim2.new(1, 0, 0, 16),
+            Text = "+" .. (c.args.n - visiveis) .. " arguments",
+            TextColor3 = COR.apagado,
+            LayoutOrder = visiveis + 1,
+        }, cartao)
+    end
+
+    table.insert(cartoes, cartao)
+    if #cartoes > MAX_CHAMADAS then
+        table.remove(cartoes, 1):Destroy()
+    end
+end
+
+local function limparCartoes()
+    for _, c in ipairs(cartoes) do
+        c:Destroy()
+    end
+    table.clear(cartoes)
+end
+
+-- Seleção e lista
+local function mostrarDireita(qual)
+    painelExcl.Visible = qual == "excl"
+    detalhe.Visible = qual == "detalhe"
+    vazio.Visible = qual == "vazio"
+    btnExcl.BackgroundColor3 = qual == "excl" and COR.violeta or COR.item
+end
+
+local function pintarLinha(grupo)
+    local ativa = grupo == selecionado
+    grupo.linha.BackgroundColor3 = ativa and COR.linha or COR.item
+    grupo.borda.Enabled = ativa
+end
+
+local function selecionar(grupo)
+    local anterior = selecionado
+    selecionado = grupo
+    if anterior and anterior.linha.Parent then
+        pintarLinha(anterior)
+    end
+    limparCartoes()
+    if not grupo then
+        mostrarDireita("vazio")
+        return
+    end
+
+    pintarLinha(grupo)
+    lblNome.Text = grupo.nome
+    lblInfo.Text = grupo.classe .. "  ·  " .. grupo.total .. " calls"
+    lblCaminho.Text = grupo.completo
+    for _, c in ipairs(grupo.chamadas) do
+        adicionarCartao(grupo, c)
+    end
+    mostrarDireita("detalhe")
+end
+
+local function linhaVisivel(grupo)
+    if grupo.aba ~= abaAtual then
+        return false
+    end
+    return filtro == ""
+        or grupo.nome:lower():find(filtro, 1, true) ~= nil
+        or grupo.completo:lower():find(filtro, 1, true) ~= nil
+end
+
+local function atualizarLista()
+    for _, porRemote in pairs(grupos) do
+        for _, g in pairs(porRemote) do
+            g.linha.Visible = linhaVisivel(g)
+        end
+    end
+end
+
+local function atualizarAbas()
+    for _, aba in ipairs(ABAS) do
+        local b = botoesAba[aba.id]
+        local atual = aba.id == abaAtual
+        b.Text = aba.nome .. "  " .. totalAba[aba.id]
+        b.BackgroundColor3 = atual and COR.violeta or COR.painel
+        b.TextColor3 = atual and Color3.new(1, 1, 1) or COR.apagado
+    end
+end
+
+for i, aba in ipairs(ABAS) do
+    local b = botao({
+        Size = UDim2.new(1 / 3, -3, 1, 0),
+        LayoutOrder = i,
+    }, linhaAbas)
+    botoesAba[aba.id] = b
+    b.MouseButton1Click:Connect(function()
+        abaAtual = aba.id
+        atualizarAbas()
+        atualizarLista()
+        if selecionado and selecionado.aba ~= abaAtual then
+            selecionar(nil)
+        end
+    end)
+end
+atualizarAbas()
+
+-- Ícone desenhado com Frames: seta única = evento, setas opostas = chamada com retorno.
+local function desenharSeta(pai, cor, y, x1, x2)
+    local sentido = x2 > x1 and 1 or -1
+    local function barra(x, yBarra, largura, rotacao)
+        criar("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(x, yBarra),
+            Size = UDim2.fromOffset(largura, 2),
+            Rotation = rotacao,
+            BackgroundColor3 = cor,
+            BorderSizePixel = 0,
+        }, pai)
+    end
+    barra((x1 + x2) / 2, y, math.abs(x2 - x1), 0)
+    barra(x2 - sentido * 2, y - 2, 6, sentido * 45)
+    barra(x2 - sentido * 2, y + 2, 6, -sentido * 45)
+end
+
+local function novoGrupo(aba, remote)
+    seqLinha += 1
+    local classe = remote.ClassName
+    local sigla = SIGLA[classe] or { "?", COR.apagado }
+    local grupo = {
+        aba = aba,
+        remote = remote,
+        nome = remote.Name,
+        classe = classe,
+        completo = remote:GetFullName(),
+        total = 0,
+        chamadas = {},
+    }
+
+    local linha = criar("TextButton", {
+        Size = UDim2.new(1, -6, 0, 32),
+        BackgroundColor3 = COR.item,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        LayoutOrder = seqLinha,
+    }, listaRemotes)
+    canto(linha)
+    grupo.linha = linha
+    grupo.borda = criar("UIStroke", {
+        Color = COR.violeta,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Enabled = false,
+    }, linha)
+
+    local selo = rotulo({
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 6, 0.5, 0),
+        Size = UDim2.fromOffset(24, 18),
+        BackgroundTransparency = 0,
+        BackgroundColor3 = sigla[2],
+        Text = sigla[1],
+        TextColor3 = COR.fundo,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+    }, linha)
+    canto(selo, 4)
+
+    if ICONE_IMAGEM[classe] then
+        criar("ImageLabel", {
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 34, 0.5, 0),
+            Size = UDim2.fromOffset(18, 18),
+            BackgroundTransparency = 1,
+            Image = ICONE_IMAGEM[classe],
+        }, linha)
+    else
+        local icone = criar("Frame", {
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 35, 0.5, 0),
+            Size = UDim2.fromOffset(16, 16),
+            BackgroundTransparency = 1,
+        }, linha)
+        if CLASSE_COM_RETORNO[classe] then
+            desenharSeta(icone, sigla[2], 4, 2, 14)
+            desenharSeta(icone, sigla[2], 12, 14, 2)
+        else
+            desenharSeta(icone, sigla[2], 8, 1, 15)
+        end
+    end
+
+    grupo.lblNome = rotulo({
+        Position = UDim2.fromOffset(56, 0),
+        Size = UDim2.new(1, -104, 1, 0),
+        Text = grupo.nome,
+        TextColor3 = bloqueados[remote] and COR.vermelho or COR.texto,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Font = Enum.Font.GothamMedium,
+    }, linha)
+
+    grupo.conta = rotulo({
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -8, 0, 0),
+        Size = UDim2.fromOffset(44, 32),
+        TextColor3 = COR.apagado,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        TextSize = 11,
+    }, linha)
+
+    linha.MouseButton1Click:Connect(function()
+        selecionar(grupo)
+    end)
+
+    grupos[aba][remote] = grupo
+    totalAba[aba] += 1
+    linha.Visible = linhaVisivel(grupo)
+    atualizarAbas()
+    return grupo
+end
+
+local function removerGrupo(grupo)
+    if grupo == selecionado then
+        selecionar(nil)
+    end
+    grupo.linha:Destroy()
+    grupos[grupo.aba][grupo.remote] = nil
+    totalAba[grupo.aba] -= 1
+end
+
+-- Ignorados e bloqueados
+local function pintarBloqueio(remote)
+    for _, aba in ipairs(ABAS) do
+        local g = grupos[aba.id][remote]
+        if g then
+            g.lblNome.TextColor3 = bloqueados[remote] and COR.vermelho or COR.texto
+        end
+    end
+end
+
+local function atualizarExcluidos()
+    for _, filho in ipairs(listaExcl:GetChildren()) do
+        if filho:IsA("Frame") then
+            filho:Destroy()
+        end
+    end
+
+    local itens = {}
+    for remote, nome in pairs(excluidos) do
+        table.insert(itens, { remote = remote, nome = nome, lista = excluidos, tag = "Ignored" })
+    end
+    for remote, nome in pairs(bloqueados) do
+        table.insert(itens, { remote = remote, nome = nome, lista = bloqueados, tag = "Blocked" })
+    end
+    table.sort(itens, function(a, b)
+        return a.nome < b.nome
+    end)
+    btnExcl.Text = "Filtered " .. #itens
+
+    for i, item in ipairs(itens) do
+        local linha = criar("Frame", {
+            Size = UDim2.new(1, -6, 0, 30),
+            BackgroundColor3 = COR.item,
+            BorderSizePixel = 0,
+            LayoutOrder = i,
+        }, listaExcl)
+        canto(linha)
+        rotulo({
+            Position = UDim2.fromOffset(8, 0),
+            Size = UDim2.new(0, 62, 1, 0),
+            Text = item.tag,
+            TextColor3 = item.lista == bloqueados and COR.vermelho or COR.violeta,
+            TextSize = 11,
+        }, linha)
+        rotulo({
+            Position = UDim2.fromOffset(72, 0),
+            Size = UDim2.new(1, -148, 1, 0),
+            Text = item.nome,
+            TextTruncate = Enum.TextTruncate.AtStart,
+            Font = Enum.Font.Code,
+        }, linha)
+        local restaurar = botao({
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -5, 0.5, 0),
+            Size = UDim2.fromOffset(66, 20),
+            BackgroundColor3 = COR.linha,
+            Text = "Restore",
+            TextSize = 11,
+        }, linha)
+        restaurar.MouseButton1Click:Connect(function()
+            item.lista[item.remote] = nil
+            pintarBloqueio(item.remote)
+            atualizarExcluidos()
+        end)
+    end
+end
+
+local function ignorarGrupo(grupo)
+    excluidos[grupo.remote] = grupo.completo
+    for _, aba in ipairs(ABAS) do
+        local g = grupos[aba.id][grupo.remote]
+        if g then
+            removerGrupo(g)
+        end
+    end
+    atualizarAbas()
+    atualizarExcluidos()
+end
+
+btnExcluir.MouseButton1Click:Connect(function()
+    if selecionado then
+        ignorarGrupo(selecionado)
+    end
+end)
+
+btnCopiarRemote.MouseButton1Click:Connect(function()
+    if selecionado then
+        local ultima = selecionado.chamadas[#selecionado.chamadas]
+        copiar(btnCopiarRemote, ultima and codigoChamada(selecionado, ultima) or caminho(selecionado.remote))
+    end
+end)
+
+btnExcl.MouseButton1Click:Connect(function()
+    if painelExcl.Visible then
+        mostrarDireita(selecionado and "detalhe" or "vazio")
+    else
+        mostrarDireita("excl")
+    end
+end)
+
+btnLimparExcl.MouseButton1Click:Connect(function()
+    local antigos = bloqueados
+    bloqueados = {}
+    for remote in pairs(antigos) do
+        pintarBloqueio(remote)
+    end
+    table.clear(excluidos)
+    atualizarExcluidos()
+end)
+
+-- Tela de detalhes da chamada
+local CORES_CODIGO = {
+    palavra = "#BE9FFF",
+    texto = "#96E18C",
+    numero = "#F5C86E",
+    valor = "#F587AF",
+    comentario = "#7D7391",
+}
+local PALAVRAS = {}
+for p in ("local function end if then else elseif for in do while repeat until return not and or break"):gmatch("%a+") do
+    PALAVRAS[p] = true
+end
+local VALORES = { ["true"] = true, ["false"] = true, ["nil"] = true }
+local ESCAPES = { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;" }
+
+local function escapar(t)
+    return (t:gsub("[&<>]", ESCAPES))
+end
+
+local function realcar(codigo)
+    local saida, pos, n = {}, 1, #codigo
+    local function pintar(tipo, t)
+        table.insert(saida, ('<font color="%s">%s</font>'):format(CORES_CODIGO[tipo], escapar(t)))
+    end
+
+    while pos <= n do
+        local resto2 = codigo:sub(pos, pos + 1)
+        local c = codigo:sub(pos, pos)
+        local token
+        if resto2 == "--" then
+            token = codigo:match("^%-%-%[%[.-%]%]", pos) or codigo:match("^%-%-[^\n]*", pos)
+            pintar("comentario", token)
+        elseif c == '"' then
+            local i = pos + 1
+            while i <= n do
+                local b = codigo:byte(i)
+                if b == 92 then
+                    i += 2
+                elseif b == 34 then
+                    break
+                else
+                    i += 1
+                end
+            end
+            token = codigo:sub(pos, math.min(i, n))
+            pintar("texto", token)
+        elseif c:match("%d") then
+            token = codigo:match("^[%d%.]+", pos)
+            pintar("numero", token)
+        elseif c:match("[%a_]") then
+            token = codigo:match("^[%w_]+", pos)
+            if PALAVRAS[token] then
+                pintar("palavra", token)
+            elseif VALORES[token] then
+                pintar("valor", token)
+            else
+                table.insert(saida, token)
+            end
+        else
+            token = c
+            table.insert(saida, escapar(c))
+        end
+        pos += #token
+    end
+    return table.concat(saida)
+end
+
+local fundoModal = criar("TextButton", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundColor3 = Color3.new(0, 0, 0),
+    BackgroundTransparency = 0.45,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    Visible = false,
+    ZIndex = 10,
+}, corpo)
+canto(fundoModal, 10)
+
+local modal = criar("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromScale(0.74, 0.95),
+    BackgroundColor3 = COR.fundo,
+    BorderSizePixel = 0,
+    Active = true,
+}, fundoModal)
+canto(modal, 10)
+criar("UIStroke", { Color = COR.violeta, Transparency = 0.55 }, modal)
+criar("UISizeConstraint", { MaxSize = Vector2.new(490, 390) }, modal)
+
+local barraModal = criar("Frame", {
+    Size = UDim2.new(1, 0, 0, 38),
+    BackgroundTransparency = 1,
+}, modal)
+
+local tituloModal = rotulo({
+    Position = UDim2.fromOffset(40, 0),
+    Size = UDim2.new(1, -80, 0, 38),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+}, modal)
+
+local btnFecharModal = botao({
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -8, 0, 7),
+    Size = UDim2.fromOffset(24, 24),
+    Text = "X",
+    TextColor3 = COR.vermelho,
+}, modal)
+
+local abasModal = criar("Frame", {
+    Position = UDim2.fromOffset(10, 40),
+    Size = UDim2.new(1, -20, 0, 26),
+    BackgroundTransparency = 1,
+}, modal)
+criar("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, abasModal)
+
+local areaModal = criar("Frame", {
+    Position = UDim2.fromOffset(10, 70),
+    Size = UDim2.new(1, -20, 1, -118),
+    BackgroundColor3 = COR.painel,
+    BorderSizePixel = 0,
+}, modal)
+canto(areaModal, 6)
+
+local conteudoArgs = rolagem({
+    Position = UDim2.fromOffset(6, 6),
+    Size = UDim2.new(1, -10, 1, -12),
+}, areaModal)
+
+local conteudoCodigo = criar("ScrollingFrame", {
+    Position = UDim2.fromOffset(8, 6),
+    Size = UDim2.new(1, -12, 1, -12),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.XY,
+    ScrollingDirection = Enum.ScrollingDirection.XY,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = COR.violeta,
+    Visible = false,
+}, areaModal)
+
+local lblCodigo = rotulo({
+    AutomaticSize = Enum.AutomaticSize.XY,
+    RichText = true,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    Font = Enum.Font.Code,
+    TextSize = 12,
+}, conteudoCodigo)
+
+local modalGrupo, modalChamada
+local abaModalAtual = "args"
+local botoesAbaModal = {}
+local menuAberto = nil
+local LIMITE_CODIGO = 16000
+
+local function fecharMenu()
+    if menuAberto then
+        menuAberto.Visible = false
+        menuAberto = nil
+    end
+end
+
+local function avisar(texto)
+    local grupo = modalGrupo
+    tituloModal.Text = texto
+    task.delay(1, function()
+        if modalGrupo == grupo and grupo then
+            tituloModal.Text = grupo.nome
+        end
+    end)
+end
+
+local function copiarComAviso(texto)
+    if setclipboard then
+        setclipboard(texto)
+        avisar("Copied!")
+    else
+        avisar("setclipboard unavailable")
+    end
+end
+
+local function pintarAbasModal()
+    for id, b in pairs(botoesAbaModal) do
+        local atual = id == abaModalAtual
+        b.BackgroundColor3 = atual and COR.violeta or COR.item
+        b.TextColor3 = atual and Color3.new(1, 1, 1) or COR.apagado
+    end
+end
+
+local function definirCodigo(texto)
+    if #texto > LIMITE_CODIGO then
+        texto = texto:sub(1, LIMITE_CODIGO) .. "\n\n-- truncated on screen; copy for full text"
+    end
+    lblCodigo.Text = realcar(texto)
+    conteudoCodigo.CanvasPosition = Vector2.new(0, 0)
+end
+
+local function textoInfoFuncao(c)
+    local linhas = { "--- Function Info", "", "local Info = {" }
+    local function add(chave, valor)
+        table.insert(linhas, "    " .. chave .. " = " .. mostrar(valor, 1) .. ",")
+    end
+
+    add("Origin", c.origem)
+    if c.script then
+        local ok, nome = pcall(function()
+            return c.script:GetFullName()
+        end)
+        if ok then
+            add("Script", nome)
+        end
+    end
+    if not c.func then
+        add("Function", "not captured")
+        table.insert(linhas, "}")
+        return table.concat(linhas, "\n")
+    end
+
+    add("Function", c.nomeFuncao ~= "" and c.nomeFuncao or "(anonymous)")
+    add("Source", c.fonte)
+    add("Line", c.linha)
+    local ok, params, vararg = pcall(debug.info, c.func, "a")
+    if ok then
+        add("Parameters", params)
+        add("Vararg", vararg)
+    end
+
+    local lerUpvalues = getupvalues or (debug and debug.getupvalues)
+    if lerUpvalues then
+        local okU, upvalues = pcall(lerUpvalues, c.func)
+        if okU then
+            add("Upvalues", upvalues)
+        end
+    end
+    local lerConstantes = getconstants or (debug and debug.getconstants)
+    if lerConstantes then
+        local okC, constantes = pcall(lerConstantes, c.func)
+        if okC then
+            add("Constants", constantes)
+        end
+    end
+
+    local pilha = {}
+    for i, frame in ipairs(c.pilha or {}) do
+        pilha[i] = ("%s:%s %s"):format(frame[1], tostring(frame[2]), frame[3] ~= "" and frame[3] or "(anonymous)")
+    end
+    add("Stack", pilha)
+    table.insert(linhas, "}")
+    return table.concat(linhas, "\n")
+end
+
+local function renderArgs()
+    for _, filho in ipairs(conteudoArgs:GetChildren()) do
+        if filho:IsA("Frame") or filho:IsA("TextLabel") then
+            filho:Destroy()
+        end
+    end
+    local c = modalChamada
+    if c.args.n == 0 then
+        rotulo({
+            Size = UDim2.new(1, -6, 0, 30),
+            Text = "No arguments",
+            TextColor3 = COR.apagado,
+            TextXAlignment = Enum.TextXAlignment.Center,
+        }, conteudoArgs)
+    end
+    for i = 1, math.min(c.args.n, 100) do
+        local ok, err = pcall(linhaArg, conteudoArgs, i, c.args[i], 28)
+        if not ok then
+            warn("[Remote Log] arg " .. i .. ": " .. tostring(err))
+        end
+    end
+end
+
+local function mudarAbaModal(id, textoCodigo)
+    fecharMenu()
+    abaModalAtual = id
+    pintarAbasModal()
+    conteudoArgs.Visible = id == "args"
+    conteudoCodigo.Visible = id ~= "args"
+    if id == "args" then
+        renderArgs()
+    elseif textoCodigo then
+        definirCodigo(textoCodigo)
+    elseif id == "codigo" then
+        definirCodigo(codigoChamada(modalGrupo, modalChamada))
+    else
+        definirCodigo(textoInfoFuncao(modalChamada))
+    end
+end
+
+for i, aba in ipairs({
+    { "args", "Arguments", 96 },
+    { "codigo", "Code", 76 },
+    { "funcao", "Function Info", 112 },
+}) do
+    local b = botao({
+        Size = UDim2.fromOffset(aba[3], 26),
+        Text = aba[2],
+        LayoutOrder = i,
+    }, abasModal)
+    botoesAbaModal[aba[1]] = b
+    b.MouseButton1Click:Connect(function()
+        mudarAbaModal(aba[1])
+    end)
+end
+
+local function menuRodape(texto, deslocamento, itens)
+    local btn = botao({
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, deslocamento, 1, -10),
+        Size = UDim2.fromOffset(92, 28),
+        Text = texto,
+    }, modal)
+
+    local menu = criar("Frame", {
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, deslocamento, 1, -42),
+        Size = UDim2.fromOffset(164, #itens * 30 + 8),
+        BackgroundColor3 = COR.painel,
+        BorderSizePixel = 0,
+        Visible = false,
+        Active = true,
+        ZIndex = 20,
+    }, modal)
+    canto(menu, 6)
+    criar("UIStroke", { Color = COR.violeta, Transparency = 0.6 }, menu)
+
+    local botoes = {}
+    for i, item in ipairs(itens) do
+        local b = botao({
+            Position = UDim2.fromOffset(4, 4 + (i - 1) * 30),
+            Size = UDim2.new(1, -8, 0, 28),
+            BackgroundTransparency = 1,
+            Text = item[1],
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 21,
+        }, menu)
+        criar("UIPadding", { PaddingLeft = UDim.new(0, 8) }, b)
+        botoes[item[1]] = b
+        b.MouseButton1Click:Connect(function()
+            fecharMenu()
+            item[2]()
+        end)
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        local abrir = menuAberto ~= menu
+        fecharMenu()
+        if abrir then
+            menu.Visible = true
+            menuAberto = menu
+        end
+    end)
+    return botoes
+end
+
+local function mostrarCopiando(texto, aba)
+    copiarComAviso(texto)
+    mudarAbaModal(aba or "codigo", texto)
+end
+
+menuRodape("Code", -98, {
+    { "Calling Code", function()
+        mostrarCopiando(codigoChamada(modalGrupo, modalChamada))
+    end },
+    { "Intercept Code", function()
+        mostrarCopiando(codigoInterceptar(modalGrupo, modalChamada))
+    end },
+    { "Function Info", function()
+        mostrarCopiando(textoInfoFuncao(modalChamada), "funcao")
+    end },
+})
+
+menuRodape("Origin", 0, {
+    { "Remote Path", function()
+        copiarComAviso(caminho(modalGrupo.remote))
+    end },
+    { "Script Path", function()
+        local script = modalChamada.script
+        if script then
+            copiarComAviso(caminho(script))
+        else
+            avisar("Script not found")
+        end
+    end },
+    { "Decompiled Script", function()
+        local script = modalChamada.script
+        if not script then
+            avisar("Script not found")
+        elseif not decompile then
+            avisar("decompile unavailable")
+        else
+            avisar("Decompiling...")
+            task.spawn(function()
+                local ok, fonte = pcall(decompile, script)
+                if ok and type(fonte) == "string" then
+                    mostrarCopiando(fonte)
+                else
+                    avisar("Decompile failed")
+                end
+            end)
+        end
+    end },
+})
+
+local function repetir()
+    local c = modalChamada
+    local args = c.args
+    if c.metodo == "OnClientInvoke" then
+        avisar("Can't replay OnClientInvoke")
+    elseif c.metodo == "OnClientEvent" then
+        if firesignal then
+            task.spawn(firesignal, c.remote.OnClientEvent, table.unpack(args, 1, args.n))
+            avisar("Event replayed")
+        else
+            avisar("firesignal unavailable")
+        end
+    else
+        task.spawn(function()
+            local ok, err = pcall(function()
+                local remote = c.remote
+                remote[c.metodo](remote, table.unpack(args, 1, args.n))
+            end)
+            if not ok then
+                warn("[Remote Log] repetir: " .. tostring(err))
+            end
+        end)
+        avisar("Call replayed")
+    end
+end
+
+local botoesEvento
+botoesEvento = menuRodape("Event", 98, {
+    { "Replay", repetir },
+    { "Ignore", function()
+        local grupo = modalGrupo
+        fecharModal()
+        ignorarGrupo(grupo)
+    end },
+    { "Block", function()
+        local grupo = modalGrupo
+        if grupo.aba == "entrada" then
+            avisar("Only outgoing calls can be blocked")
+            return
+        end
+        bloqueados[grupo.remote] = not bloqueados[grupo.remote] and grupo.completo or nil
+        pintarBloqueio(grupo.remote)
+        atualizarExcluidos()
+        botoesEvento.Block.Text = bloqueados[grupo.remote] and "Unblock" or "Block"
+        avisar(bloqueados[grupo.remote] and "Remote blocked" or "Remote unblocked")
+    end },
+    { "Clear Logs", function()
+        local grupo = modalGrupo
+        fecharModal()
+        table.clear(grupo.chamadas)
+        grupo.total = 0
+        grupo.conta.Text = "x0"
+        if grupo == selecionado then
+            selecionar(grupo)
+        end
+    end },
+})
+
+abrirModal = function(grupo, c)
+    fecharMenu()
+    modalGrupo, modalChamada = grupo, c
+    tituloModal.Text = grupo.nome
+    botoesEvento.Block.Text = bloqueados[grupo.remote] and "Unblock" or "Block"
+    modal.Position = UDim2.fromScale(0.5, 0.5)
+    fundoModal.Visible = true
+    mudarAbaModal("args")
+end
+
+fecharModal = function()
+    fecharMenu()
+    fundoModal.Visible = false
+    modalGrupo, modalChamada = nil, nil
+end
+
+btnFecharModal.MouseButton1Click:Connect(fecharModal)
+fundoModal.MouseButton1Click:Connect(fecharModal)
+
+-- Mover a janela de detalhes pela barra do título (mouse e toque)
+do
+    local ativoInput, inicio, basePos
+
+    barraModal.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            ativoInput, inicio, basePos = input, input.Position, modal.Position
+        end
+    end)
+
+    table.insert(conexoes, UIS.InputChanged:Connect(function(input)
+        if not ativoInput or (input ~= ativoInput
+            and input.UserInputType ~= Enum.UserInputType.MouseMovement) then
+            return
+        end
+        modal.Position = UDim2.new(
+            basePos.X.Scale, basePos.X.Offset + input.Position.X - inicio.X,
+            basePos.Y.Scale, basePos.Y.Offset + input.Position.Y - inicio.Y
+        )
+    end))
+
+    table.insert(conexoes, UIS.InputEnded:Connect(function(input)
+        if ativoInput and (input == ativoInput
+            or input.UserInputType == Enum.UserInputType.MouseButton1) then
+            ativoInput = nil
+        end
+    end))
+end
+
+caixaFiltro:GetPropertyChangedSignal("Text"):Connect(function()
+    filtro = caixaFiltro.Text:lower()
+    atualizarLista()
+end)
+
+btnPausar.MouseButton1Click:Connect(function()
+    pausado = not pausado
+    btnPausar.Text = pausado and "Resume" or "Pause"
+    btnPausar.BackgroundColor3 = pausado and COR.violeta or COR.item
+end)
+
+btnLimpar.MouseButton1Click:Connect(function()
+    fecharModal()
+    selecionar(nil)
+    for _, aba in ipairs(ABAS) do
+        for _, g in pairs(grupos[aba.id]) do
+            g.linha:Destroy()
+        end
+        table.clear(grupos[aba.id])
+        totalAba[aba.id] = 0
+    end
+    table.clear(fila)
+    atualizarAbas()
+end)
+
+-- Redimensionar pelo canto inferior direito (mouse e toque)
+local alca = criar("TextButton", {
+    Name = "Resize",
+    AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.fromScale(1, 1),
+    Size = UDim2.fromOffset(UIS.TouchEnabled and 30 or 18, UIS.TouchEnabled and 30 or 18),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    ZIndex = 9,
+}, main)
+
+do
+    local MIN_L, MIN_A = 440, 280
+    local linhas = {}
+    local ativoInput, inicio, baseTam, basePos
+
+    for i = 1, 3 do
+        linhas[i] = criar("Frame", {
+            AnchorPoint = Vector2.new(1, 1),
+            Position = UDim2.new(1, -3, 1, -3 - (i - 1) * 4),
+            Size = UDim2.fromOffset(2 + (i - 1) * 4, 2),
+            BackgroundColor3 = COR.apagado,
+            BorderSizePixel = 0,
+        }, alca)
+        canto(linhas[i], 1)
+    end
+
+    local function pintar(cor)
+        for _, l in ipairs(linhas) do
+            l.BackgroundColor3 = cor
+        end
+    end
+
+    alca.MouseEnter:Connect(function()
+        pintar(COR.violeta)
+    end)
+    alca.MouseLeave:Connect(function()
+        if not ativoInput then
+            pintar(COR.apagado)
+        end
+    end)
+
+    alca.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+        -- Fixa o tamanho atual antes de soltar o limite, senão a janela pula.
+        baseTam, basePos = main.AbsoluteSize, main.Position
+        TAMANHO = UDim2.fromOffset(baseTam.X, baseTam.Y)
+        main.Size = TAMANHO
+        limiteMain.MaxSize = Vector2.new(math.huge, math.huge)
+        ativoInput, inicio = input, input.Position
+        pintar(COR.violeta)
+    end)
+
+    table.insert(conexoes, UIS.InputChanged:Connect(function(input)
+        if not ativoInput or (input ~= ativoInput
+            and input.UserInputType ~= Enum.UserInputType.MouseMovement) then
+            return
+        end
+        local tela = gui.AbsoluteSize
+        local l = math.floor(math.clamp(baseTam.X + input.Position.X - inicio.X, MIN_L, math.max(MIN_L, tela.X)))
+        local a = math.floor(math.clamp(baseTam.Y + input.Position.Y - inicio.Y, MIN_A, math.max(MIN_A, tela.Y)))
+        TAMANHO = UDim2.fromOffset(l, a)
+        main.Size = TAMANHO
+        -- O canto superior esquerdo fica parado: a âncora é o centro.
+        main.Position = UDim2.new(
+            basePos.X.Scale, basePos.X.Offset + (l - baseTam.X) / 2,
+            basePos.Y.Scale, basePos.Y.Offset + (a - baseTam.Y) / 2
+        )
+    end))
+
+    table.insert(conexoes, UIS.InputEnded:Connect(function(input)
+        if ativoInput and (input == ativoInput
+            or input.UserInputType == Enum.UserInputType.MouseButton1) then
+            ativoInput = nil
+            pintar(COR.apagado)
+        end
+    end))
+end
+
+local minimizado = false
+btnMin.MouseButton1Click:Connect(function()
+    minimizado = not minimizado
+    corpo.Visible = not minimizado
+    alca.Visible = not minimizado
+    btnMin.Text = minimizado and "+" or "–"
+    main.Size = minimizado and UDim2.new(TAMANHO.X.Scale, TAMANHO.X.Offset, 0, 42) or TAMANHO
+end)
+
+local function fechar()
+    ativo = false
+    for _, c in ipairs(conexoes) do
+        c:Disconnect()
+    end
+    table.clear(conexoes)
+    gui:Destroy()
+    ambiente.__RemoteLogFechar = nil
+end
+ambiente.__RemoteLogFechar = fechar
+btnFechar.MouseButton1Click:Connect(fechar)
+
+-- Arrastar (mouse e toque)
+local arrastando, inicioToque, inicioPos
+
+topo.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        arrastando, inicioToque, inicioPos = true, input.Position, main.Position
+    end
+end)
+
+table.insert(conexoes, UIS.InputChanged:Connect(function(input)
+    if arrastando and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local d = input.Position - inicioToque
+        main.Position = UDim2.new(
+            inicioPos.X.Scale, inicioPos.X.Offset + d.X,
+            inicioPos.Y.Scale, inicioPos.Y.Offset + d.Y
+        )
+    end
+end))
+
+table.insert(conexoes, UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        arrastando = false
+    end
+end))
+
+-- Captura. Nada aqui pode usar namecall em Instance: trocaria o método da chamada original.
+local function clonar(v, visto, nivel)
+    if type(v) ~= "table" then
+        return v
+    end
+    if visto[v] then
+        return visto[v]
+    end
+    if nivel >= 8 then
+        return {}
+    end
+    local copia, qtd = {}, 0
+    visto[v] = copia
+    for k, val in next, v do
+        qtd += 1
+        if qtd > 400 then
+            break
+        end
+        copia[clonar(k, visto, nivel + 1)] = clonar(val, visto, nivel + 1)
+    end
+    return copia
+end
+
+local FONTE_PROPRIA = debug.info(1, "s")
+
+local function descobrirOrigem(dados)
+    dados.executor = checkcaller and checkcaller() or false
+    if getcallingscript then
+        local ok, s = pcall(getcallingscript)
+        if ok then
+            dados.script = s
+        end
+    end
+
+    local pilha = {}
+    for nivel = 2, 18 do
+        local fonte, linha, nome, func = debug.info(nivel, "slnf")
+        if fonte == nil then
+            break
+        end
+        if fonte ~= "[C]" and fonte ~= FONTE_PROPRIA then
+            if not dados.func then
+                dados.func, dados.fonte, dados.linha, dados.nomeFuncao = func, fonte, linha, nome
+            end
+            table.insert(pilha, { fonte, linha, nome })
+            if #pilha >= 8 then
+                break
+            end
+        end
+    end
+    dados.pilha = pilha
+end
+
+local function capturar(aba, metodo, remote, fixo, ...)
+    if not ativo or pausado or excluidos[remote] or #fila >= MAX_FILA then
+        return
+    end
+    local args = table.pack(...)
+    local visto = {}
+    for i = 1, args.n do
+        args[i] = clonar(args[i], visto, 0)
+    end
+    local dados = {
+        aba = aba,
+        metodo = metodo,
+        remote = remote,
+        origem = fixo,
+        args = args,
+        tempo = os.time(),
+    }
+    if not fixo then
+        descobrirOrigem(dados)
+    end
+    table.insert(fila, dados)
+end
+
+local function textoOrigem(c)
+    if c.origem then
+        return c.origem
+    end
+    if not c.script and c.func and getfenv then
+        local ok, env = pcall(getfenv, c.func)
+        if ok and type(env) == "table" then
+            c.script = rawget(env, "script")
+        end
+    end
+    if c.script then
+        local ok, nome = pcall(function()
+            return c.script.Name
+        end)
+        if ok then
+            return (c.executor and "Executor: " or "Script: ") .. nome
+        end
+    end
+    return c.executor and "Executor" or "Game"
+end
+
+-- O hook roda na identidade do jogo; a UI só pode ser criada na thread do script.
+local function processar(c)
+    if excluidos[c.remote] then
+        return
+    end
+    local grupo = grupos[c.aba][c.remote] or novoGrupo(c.aba, c.remote)
+    c.origem = textoOrigem(c)
+    grupo.total += 1
+    grupo.conta.Text = "x" .. grupo.total
+    table.insert(grupo.chamadas, c)
+    if #grupo.chamadas > MAX_CHAMADAS then
+        table.remove(grupo.chamadas, 1)
+    end
+    if grupo == selecionado then
+        lblInfo.Text = grupo.classe .. "  ·  " .. grupo.total .. " calls"
+        adicionarCartao(grupo, c)
+    end
+end
+
+task.spawn(function()
+    while ativo do
+        if #fila > 0 then
+            local lote = fila
+            fila = {}
+            for _, c in ipairs(lote) do
+                local ok, err = pcall(processar, c)
+                if not ok then
+                    warn("[Remote Log] " .. tostring(err))
+                end
+            end
+        end
+        task.wait(0.1)
+    end
+end)
+
+-- Saída: namecall + hookfunction, sem checkcaller, para pegar qualquer origem.
+local ultimoNamecall = setmetatable({}, { __mode = "k" })
+
+if hookmetamethod then
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local metodo = getnamecallmethod()
+        if ativo and NOMES_METODO[metodo] and typeof(self) == "Instance" then
+            local porClasse = METODOS[self.ClassName]
+            local aba = porClasse and porClasse[metodo]
+            if aba then
+                pcall(capturar, aba, metodo, self, nil, ...)
+                if bloqueados[self] then
+                    return nil
+                end
+                ultimoNamecall[coroutine.running()] = self
+            end
+        end
+        return oldNamecall(self, ...)
+    end))
+end
+
+local funcoesHookadas = {}
+
+local function hookar(classe, metodo)
+    local alvo = Instance.new(classe)[metodo]
+    if funcoesHookadas[alvo] then
+        return
+    end
+    funcoesHookadas[alvo] = true
+    local old
+    old = hookfunction(alvo, newcclosure(function(self, ...)
+        local thread = coroutine.running()
+        if ultimoNamecall[thread] == self then
+            ultimoNamecall[thread] = nil -- já capturado no namecall
+        elseif ativo and typeof(self) == "Instance" then
+            local porClasse = METODOS[self.ClassName]
+            local aba = porClasse and porClasse[metodo]
+            if aba then
+                pcall(capturar, aba, metodo, self, nil, ...)
+                if bloqueados[self] then
+                    return nil
+                end
+            end
+        end
+        return old(self, ...)
+    end))
+end
+
+if hookfunction then
+    for classe, metodos in pairs(METODOS) do
+        for metodo in pairs(metodos) do
+            local ok, err = pcall(hookar, classe, metodo)
+            if not ok then
+                warn("[Remote Log] hook " .. classe .. "." .. metodo .. ": " .. tostring(err))
+            end
+        end
+    end
+end
+
+-- Entrada: OnClientEvent de todos os remotes e callbacks de RemoteFunction.
+local vistos = setmetatable({}, { __mode = "k" })
+local funcoes = setmetatable({}, { __mode = "k" })
+local callbacks = setmetatable({}, { __mode = "k" })
+
+local function observar(inst)
+    if vistos[inst] then
+        return
+    end
+    local classe = inst.ClassName
+    if classe == "RemoteEvent" or classe == "UnreliableRemoteEvent" then
+        vistos[inst] = true
+        table.insert(conexoes, inst.OnClientEvent:Connect(function(...)
+            pcall(capturar, "entrada", "OnClientEvent", inst, "Server", ...)
+        end))
+    elseif classe == "RemoteFunction" then
+        vistos[inst] = true
+        funcoes[inst] = true
+    end
+end
+
+for _, inst in ipairs(game:GetDescendants()) do
+    pcall(observar, inst)
+end
+if getnilinstances then
+    for _, inst in ipairs(getnilinstances()) do
+        pcall(observar, inst)
+    end
+end
+table.insert(conexoes, game.DescendantAdded:Connect(function(inst)
+    pcall(observar, inst)
+end))
+
+if getcallbackvalue and hookfunction then
+    local function vigiarCallback(rf)
+        local cb = getcallbackvalue(rf, "OnClientInvoke")
+        if type(cb) ~= "function" or callbacks[cb] then
+            return
+        end
+        callbacks[cb] = true
+        local old
+        old = hookfunction(cb, function(...)
+            pcall(capturar, "entrada", "OnClientInvoke", rf, "Server", ...)
+            return old(...)
+        end)
+    end
+
+    task.spawn(function()
+        while ativo do
+            for rf in pairs(funcoes) do
+                pcall(vigiarCallback, rf)
+            end
+            task.wait(2)
+        end
+    end)
+end
