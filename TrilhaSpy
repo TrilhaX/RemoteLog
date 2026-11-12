@@ -9,12 +9,14 @@ local UIS = game:GetService("UserInputService")
 
 local MAX_CHAMADAS = 50
 local MAX_FILA = 800
-local MAX_TEXTO = 4000
+local MAX_GRUPOS = 250 -- por aba; acima disso o grupo mais antigo sai da lista
 
 local ativo, pausado = true, false
 local filtro = ""
 local fila = {}
 local conexoes = {}
+local conexoesEntrada = {} -- [remote] = conexão do OnClientEvent (limpa quando desconecta)
+local wrap = newcclosure or function(f) return f end
 local excluidos = {} -- [Instance] = caminho completo
 local bloqueados = {} -- [Instance] = caminho completo
 local abrirModal, fecharModal
@@ -209,30 +211,53 @@ local function chaveTabela(k, formatar, nivel)
     return "[" .. formatar(k, nivel + 1) .. "]"
 end
 
-local function tabelaTexto(v, nivel, formatar, limite)
-    if next(v) == nil then
-        return "{}"
-    end
-    if nivel >= limite then
-        return "{...}"
-    end
+-- Tabelas em formatação agora (detecta ciclo) e orçamento de itens da tabela mais externa.
+local tabelaTexto
+do
+    local emAndamento = {}
+    local profundidade, orcamento = 0, 0
 
-    local recuo = string.rep("    ", nivel + 1)
-    local partes, indice, qtd = {}, 1, 0
-    for k, val in next, v do
-        qtd += 1
-        if qtd > 150 then
-            table.insert(partes, recuo .. "-- more items omitted")
-            break
+    tabelaTexto = function(v, nivel, formatar, limite)
+        if next(v) == nil then
+            return "{}"
         end
-        if k == indice then
-            indice += 1
-            table.insert(partes, recuo .. formatar(val, nivel + 1))
-        else
-            table.insert(partes, recuo .. chaveTabela(k, formatar, nivel) .. " = " .. formatar(val, nivel + 1))
+        if emAndamento[v] then
+            return "{} --[[ cycle ]]"
         end
+        if nivel >= limite then
+            return "{...}"
+        end
+        if profundidade == 0 then
+            orcamento = 3000
+        end
+
+        local recuo = string.rep("    ", nivel + 1)
+        local partes, indice, qtd = {}, 1, 0
+        emAndamento[v] = true
+        profundidade += 1
+        local ok, err = pcall(function()
+            for k, val in next, v do
+                qtd += 1
+                orcamento -= 1
+                if qtd > 150 or orcamento < 0 then
+                    table.insert(partes, recuo .. "-- more items omitted")
+                    break
+                end
+                if k == indice then
+                    indice += 1
+                    table.insert(partes, recuo .. formatar(val, nivel + 1))
+                else
+                    table.insert(partes, recuo .. chaveTabela(k, formatar, nivel) .. " = " .. formatar(val, nivel + 1))
+                end
+            end
+        end)
+        profundidade -= 1
+        emAndamento[v] = nil
+        if not ok then
+            error(err, 0)
+        end
+        return "{\n" .. table.concat(partes, ",\n") .. "\n" .. string.rep("    ", nivel) .. "}"
     end
-    return "{\n" .. table.concat(partes, ",\n") .. "\n" .. string.rep("    ", nivel) .. "}"
 end
 
 local function mostrar(v, nivel)
@@ -335,6 +360,15 @@ end
 
 local function codigoInterceptar(grupo, c)
     local base = CABECALHO .. declararRemote(grupo.remote) .. "\n"
+    if c.metodo == "OnClientInvoke" then
+        return base .. [[local old = getcallbackvalue(Remote, "OnClientInvoke")
+Remote.OnClientInvoke = function(...)
+    print("Invoked", ...)
+    if old then
+        return old(...)
+    end
+end]]
+    end
     if grupo.aba == "entrada" then
         return base .. [[Remote.OnClientEvent:Connect(function(...)
     print("Received", ...)
@@ -373,6 +407,15 @@ local main = criar("Frame", {
 canto(main, 10)
 criar("UIStroke", { Color = COR.violeta, Transparency = 0.55 }, main)
 local limiteMain = criar("UISizeConstraint", { MaxSize = Vector2.new(780, 470) }, main)
+
+-- Mínimo 440x280, sem passar da tela; minimizado libera a altura.
+local function minimoMain(minimizado)
+    local tela = gui.AbsoluteSize
+    local l = tela.X > 0 and math.min(440, tela.X) or 440
+    local a = tela.Y > 0 and math.min(280, tela.Y) or 280
+    limiteMain.MinSize = Vector2.new(l, minimizado and 0 or a)
+end
+minimoMain(false)
 
 local topo = criar("Frame", {
     Size = UDim2.new(1, 0, 0, 42),
@@ -1421,8 +1464,12 @@ menuRodape("Origin", 0, {
             avisar("decompile unavailable")
         else
             avisar("Decompiling...")
+            local alvo = modalChamada
             task.spawn(function()
                 local ok, fonte = pcall(decompile, script)
+                if not ativo or modalChamada ~= alvo then
+                    return -- janela fechada ou outra chamada aberta
+                end
                 if ok and type(fonte) == "string" then
                     mostrarCopiando(fonte)
                 else
@@ -1441,7 +1488,7 @@ local function repetir()
     elseif c.metodo == "OnClientEvent" then
         if firesignal then
             task.spawn(firesignal, c.remote.OnClientEvent, table.unpack(args, 1, args.n))
-            avisar("Event replayed")
+            avisar(c.truncado and "Event replayed (args were truncated)" or "Event replayed")
         else
             avisar("firesignal unavailable")
         end
@@ -1455,7 +1502,7 @@ local function repetir()
                 warn("[Remote Log] repetir: " .. tostring(err))
             end
         end)
-        avisar("Call replayed")
+        avisar(c.truncado and "Call replayed (args were truncated)" or "Call replayed")
     end
 end
 
@@ -1581,7 +1628,7 @@ local alca = criar("TextButton", {
 do
     local MIN_L, MIN_A = 440, 280
     local linhas = {}
-    local ativoInput, inicio, baseTam, basePos
+    local ativoInput, inicio, baseTam, basePos, baseEsq
 
     for i = 1, 3 do
         linhas[i] = criar("Frame", {
@@ -1616,6 +1663,7 @@ do
         end
         -- Fixa o tamanho atual antes de soltar o limite, senão a janela pula.
         baseTam, basePos = main.AbsoluteSize, main.Position
+        baseEsq = main.AbsolutePosition - gui.AbsolutePosition
         TAMANHO = UDim2.fromOffset(baseTam.X, baseTam.Y)
         main.Size = TAMANHO
         limiteMain.MaxSize = Vector2.new(math.huge, math.huge)
@@ -1628,9 +1676,10 @@ do
             and input.UserInputType ~= Enum.UserInputType.MouseMovement) then
             return
         end
-        local tela = gui.AbsoluteSize
-        local l = math.floor(math.clamp(baseTam.X + input.Position.X - inicio.X, MIN_L, math.max(MIN_L, tela.X)))
-        local a = math.floor(math.clamp(baseTam.Y + input.Position.Y - inicio.Y, MIN_A, math.max(MIN_A, tela.Y)))
+        -- Máximo = espaço entre o canto superior esquerdo (fixo) e a borda da tela.
+        local livre = gui.AbsoluteSize - baseEsq
+        local l = math.floor(math.clamp(baseTam.X + input.Position.X - inicio.X, MIN_L, math.max(MIN_L, livre.X)))
+        local a = math.floor(math.clamp(baseTam.Y + input.Position.Y - inicio.Y, MIN_A, math.max(MIN_A, livre.Y)))
         TAMANHO = UDim2.fromOffset(l, a)
         main.Size = TAMANHO
         -- O canto superior esquerdo fica parado: a âncora é o centro.
@@ -1655,294 +1704,427 @@ btnMin.MouseButton1Click:Connect(function()
     corpo.Visible = not minimizado
     alca.Visible = not minimizado
     btnMin.Text = minimizado and "+" or "–"
+    minimoMain(minimizado)
     main.Size = minimizado and UDim2.new(TAMANHO.X.Scale, TAMANHO.X.Offset, 0, 42) or TAMANHO
 end)
 
 local function fechar()
     ativo = false
+    -- Os hooks ficam instalados (não dá para desfazer), mas sem handler só repassam a chamada.
+    ambiente.__RemoteLogSaida = nil
+    ambiente.__RemoteLogEntrada = nil
     for _, c in ipairs(conexoes) do
         c:Disconnect()
     end
     table.clear(conexoes)
+    for _, c in pairs(conexoesEntrada) do
+        c:Disconnect()
+    end
+    table.clear(conexoesEntrada)
+    table.clear(fila)
     gui:Destroy()
     ambiente.__RemoteLogFechar = nil
 end
 ambiente.__RemoteLogFechar = fechar
 btnFechar.MouseButton1Click:Connect(fechar)
 
--- Arrastar (mouse e toque)
-local arrastando, inicioToque, inicioPos
+-- Arrastar (mouse e toque): segue só o toque que começou e não deixa sair da tela.
+do
+    local ativoInput, inicio, centro0
 
-topo.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        arrastando, inicioToque, inicioPos = true, input.Position, main.Position
-    end
-end)
-
-table.insert(conexoes, UIS.InputChanged:Connect(function(input)
-    if arrastando and (input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch) then
-        local d = input.Position - inicioToque
-        main.Position = UDim2.new(
-            inicioPos.X.Scale, inicioPos.X.Offset + d.X,
-            inicioPos.Y.Scale, inicioPos.Y.Offset + d.Y
-        )
-    end
-end))
-
-table.insert(conexoes, UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        arrastando = false
-    end
-end))
-
--- Captura. Nada aqui pode usar namecall em Instance: trocaria o método da chamada original.
-local function clonar(v, visto, nivel)
-    if type(v) ~= "table" then
-        return v
-    end
-    if visto[v] then
-        return visto[v]
-    end
-    if nivel >= 8 then
-        return {}
-    end
-    local copia, qtd = {}, 0
-    visto[v] = copia
-    for k, val in next, v do
-        qtd += 1
-        if qtd > 400 then
-            break
+    topo.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            ativoInput, inicio = input, input.Position
+            centro0 = main.AbsolutePosition - gui.AbsolutePosition + main.AbsoluteSize / 2
         end
-        copia[clonar(k, visto, nivel + 1)] = clonar(val, visto, nivel + 1)
-    end
-    return copia
-end
+    end)
 
-local FONTE_PROPRIA = debug.info(1, "s")
-
-local function descobrirOrigem(dados)
-    dados.executor = checkcaller and checkcaller() or false
-    if getcallingscript then
-        local ok, s = pcall(getcallingscript)
-        if ok then
-            dados.script = s
-        end
-    end
-
-    local pilha = {}
-    for nivel = 2, 18 do
-        local fonte, linha, nome, func = debug.info(nivel, "slnf")
-        if fonte == nil then
-            break
-        end
-        if fonte ~= "[C]" and fonte ~= FONTE_PROPRIA then
-            if not dados.func then
-                dados.func, dados.fonte, dados.linha, dados.nomeFuncao = func, fonte, linha, nome
-            end
-            table.insert(pilha, { fonte, linha, nome })
-            if #pilha >= 8 then
-                break
-            end
-        end
-    end
-    dados.pilha = pilha
-end
-
-local function capturar(aba, metodo, remote, fixo, ...)
-    if not ativo or pausado or excluidos[remote] or #fila >= MAX_FILA then
-        return
-    end
-    local args = table.pack(...)
-    local visto = {}
-    for i = 1, args.n do
-        args[i] = clonar(args[i], visto, 0)
-    end
-    local dados = {
-        aba = aba,
-        metodo = metodo,
-        remote = remote,
-        origem = fixo,
-        args = args,
-        tempo = os.time(),
-    }
-    if not fixo then
-        descobrirOrigem(dados)
-    end
-    table.insert(fila, dados)
-end
-
-local function textoOrigem(c)
-    if c.origem then
-        return c.origem
-    end
-    if not c.script and c.func and getfenv then
-        local ok, env = pcall(getfenv, c.func)
-        if ok and type(env) == "table" then
-            c.script = rawget(env, "script")
-        end
-    end
-    if c.script then
-        local ok, nome = pcall(function()
-            return c.script.Name
-        end)
-        if ok then
-            return (c.executor and "Executor: " or "Script: ") .. nome
-        end
-    end
-    return c.executor and "Executor" or "Game"
-end
-
--- O hook roda na identidade do jogo; a UI só pode ser criada na thread do script.
-local function processar(c)
-    if excluidos[c.remote] then
-        return
-    end
-    local grupo = grupos[c.aba][c.remote] or novoGrupo(c.aba, c.remote)
-    c.origem = textoOrigem(c)
-    grupo.total += 1
-    grupo.conta.Text = "x" .. grupo.total
-    table.insert(grupo.chamadas, c)
-    if #grupo.chamadas > MAX_CHAMADAS then
-        table.remove(grupo.chamadas, 1)
-    end
-    if grupo == selecionado then
-        lblInfo.Text = grupo.classe .. "  ·  " .. grupo.total .. " calls"
-        adicionarCartao(grupo, c)
-    end
-end
-
-task.spawn(function()
-    while ativo do
-        if #fila > 0 then
-            local lote = fila
-            fila = {}
-            for _, c in ipairs(lote) do
-                local ok, err = pcall(processar, c)
-                if not ok then
-                    warn("[Remote Log] " .. tostring(err))
-                end
-            end
-        end
-        task.wait(0.1)
-    end
-end)
-
--- Saída: namecall + hookfunction, sem checkcaller, para pegar qualquer origem.
-local ultimoNamecall = setmetatable({}, { __mode = "k" })
-
-if hookmetamethod then
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-        local metodo = getnamecallmethod()
-        if ativo and NOMES_METODO[metodo] and typeof(self) == "Instance" then
-            local porClasse = METODOS[self.ClassName]
-            local aba = porClasse and porClasse[metodo]
-            if aba then
-                pcall(capturar, aba, metodo, self, nil, ...)
-                if bloqueados[self] then
-                    return nil
-                end
-                ultimoNamecall[coroutine.running()] = self
-            end
-        end
-        return oldNamecall(self, ...)
-    end))
-end
-
-local funcoesHookadas = {}
-
-local function hookar(classe, metodo)
-    local alvo = Instance.new(classe)[metodo]
-    if funcoesHookadas[alvo] then
-        return
-    end
-    funcoesHookadas[alvo] = true
-    local old
-    old = hookfunction(alvo, newcclosure(function(self, ...)
-        local thread = coroutine.running()
-        if ultimoNamecall[thread] == self then
-            ultimoNamecall[thread] = nil -- já capturado no namecall
-        elseif ativo and typeof(self) == "Instance" then
-            local porClasse = METODOS[self.ClassName]
-            local aba = porClasse and porClasse[metodo]
-            if aba then
-                pcall(capturar, aba, metodo, self, nil, ...)
-                if bloqueados[self] then
-                    return nil
-                end
-            end
-        end
-        return old(self, ...)
-    end))
-end
-
-if hookfunction then
-    for classe, metodos in pairs(METODOS) do
-        for metodo in pairs(metodos) do
-            local ok, err = pcall(hookar, classe, metodo)
-            if not ok then
-                warn("[Remote Log] hook " .. classe .. "." .. metodo .. ": " .. tostring(err))
-            end
-        end
-    end
-end
-
--- Entrada: OnClientEvent de todos os remotes e callbacks de RemoteFunction.
-local vistos = setmetatable({}, { __mode = "k" })
-local funcoes = setmetatable({}, { __mode = "k" })
-local callbacks = setmetatable({}, { __mode = "k" })
-
-local function observar(inst)
-    if vistos[inst] then
-        return
-    end
-    local classe = inst.ClassName
-    if classe == "RemoteEvent" or classe == "UnreliableRemoteEvent" then
-        vistos[inst] = true
-        table.insert(conexoes, inst.OnClientEvent:Connect(function(...)
-            pcall(capturar, "entrada", "OnClientEvent", inst, "Server", ...)
-        end))
-    elseif classe == "RemoteFunction" then
-        vistos[inst] = true
-        funcoes[inst] = true
-    end
-end
-
-for _, inst in ipairs(game:GetDescendants()) do
-    pcall(observar, inst)
-end
-if getnilinstances then
-    for _, inst in ipairs(getnilinstances()) do
-        pcall(observar, inst)
-    end
-end
-table.insert(conexoes, game.DescendantAdded:Connect(function(inst)
-    pcall(observar, inst)
-end))
-
-if getcallbackvalue and hookfunction then
-    local function vigiarCallback(rf)
-        local cb = getcallbackvalue(rf, "OnClientInvoke")
-        if type(cb) ~= "function" or callbacks[cb] then
+    table.insert(conexoes, UIS.InputChanged:Connect(function(input)
+        if not ativoInput or (input ~= ativoInput
+            and input.UserInputType ~= Enum.UserInputType.MouseMovement) then
             return
         end
-        callbacks[cb] = true
-        local old
-        old = hookfunction(cb, function(...)
-            pcall(capturar, "entrada", "OnClientInvoke", rf, "Server", ...)
-            return old(...)
-        end)
+        local tela, meio = gui.AbsoluteSize, main.AbsoluteSize / 2
+        local alvo = centro0 + Vector2.new(input.Position.X - inicio.X, input.Position.Y - inicio.Y)
+        local x = math.clamp(alvo.X, math.min(meio.X, tela.X / 2), math.max(tela.X - meio.X, tela.X / 2))
+        local y = math.clamp(alvo.Y, math.min(meio.Y, tela.Y / 2), math.max(tela.Y - meio.Y, tela.Y / 2))
+        main.Position = UDim2.fromOffset(math.floor(x), math.floor(y))
+    end))
+
+    table.insert(conexoes, UIS.InputEnded:Connect(function(input)
+        if ativoInput and (input == ativoInput
+            or input.UserInputType == Enum.UserInputType.MouseButton1) then
+            ativoInput = nil
+        end
+    end))
+end
+
+-- Captura. Nada aqui pode usar namecall em Instance: trocaria o método da chamada original.
+-- Bloco do: os locals da captura não contam no limite de 200 do chunk principal.
+do
+    local function clonar(v, visto, nivel)
+        if type(v) ~= "table" then
+            return v
+        end
+        if visto[v] then
+            return visto[v]
+        end
+        if nivel >= 6 then
+            visto.truncado = true
+            return {}
+        end
+        local copia, qtd = {}, 0
+        visto[v] = copia
+        for k, val in next, v do
+            qtd += 1
+            if qtd > 200 then
+                visto.truncado = true
+                break
+            end
+            copia[clonar(k, visto, nivel + 1)] = clonar(val, visto, nivel + 1)
+        end
+        return copia
+    end
+
+    local FONTE_PROPRIA = debug.info(1, "s")
+    local ultimaPilha = setmetatable({}, { __mode = "k" }) -- [remote] = os.clock() da última pilha
+
+    local function descobrirOrigem(dados)
+        dados.executor = checkcaller and checkcaller() or false
+        if getcallingscript then
+            local ok, s = pcall(getcallingscript)
+            if ok then
+                dados.script = s
+            end
+        end
+
+        -- Pilha custa tempo no frame do jogo: no máximo uma a cada 50 ms por remote.
+        local agora = os.clock()
+        local ultima = ultimaPilha[dados.remote]
+        if ultima and agora - ultima < 0.05 then
+            dados.pilha = {}
+            return
+        end
+        ultimaPilha[dados.remote] = agora
+
+        local pilha = {}
+        for nivel = 2, 14 do
+            local fonte, linha, nome, func = debug.info(nivel, "slnf")
+            if fonte == nil then
+                break
+            end
+            if fonte ~= "[C]" and fonte ~= FONTE_PROPRIA then
+                if not dados.func then
+                    dados.func, dados.fonte, dados.linha, dados.nomeFuncao = func, fonte, linha, nome
+                end
+                table.insert(pilha, { fonte, linha, nome })
+                if #pilha >= 8 then
+                    break
+                end
+            end
+        end
+        dados.pilha = pilha
+    end
+
+    local function capturar(aba, metodo, remote, fixo, ...)
+        if not ativo or pausado or excluidos[remote] or #fila >= MAX_FILA then
+            return
+        end
+        local args = table.pack(...)
+        local visto = {}
+        for i = 1, args.n do
+            args[i] = clonar(args[i], visto, 0)
+        end
+        local dados = {
+            aba = aba,
+            metodo = metodo,
+            remote = remote,
+            origem = fixo,
+            args = args,
+            tempo = os.time(),
+            truncado = visto.truncado,
+        }
+        if not fixo then
+            descobrirOrigem(dados)
+        end
+        table.insert(fila, dados)
+    end
+
+    local function textoOrigem(c)
+        if c.origem then
+            return c.origem
+        end
+        if c.script then
+            local ok, nome = pcall(function()
+                return c.script.Name
+            end)
+            if ok then
+                return (c.executor and "Executor: " or "Script: ") .. nome
+            end
+        end
+        return c.executor and "Executor" or "Game"
+    end
+
+    -- O hook roda na identidade do jogo; a UI só pode ser criada na thread do script.
+    local novosSel = {}
+
+    local function processar(c)
+        if excluidos[c.remote] then
+            return
+        end
+        local grupo = grupos[c.aba][c.remote]
+        if not grupo then
+            grupo = novoGrupo(c.aba, c.remote)
+            if totalAba[c.aba] > MAX_GRUPOS then
+                -- Tira o grupo mais antigo (menor LayoutOrder) que não esteja aberto.
+                local velho
+                for _, g in pairs(grupos[c.aba]) do
+                    if g ~= selecionado and g ~= grupo
+                        and (not velho or g.linha.LayoutOrder < velho.linha.LayoutOrder) then
+                        velho = g
+                    end
+                end
+                if velho then
+                    removerGrupo(velho)
+                    atualizarAbas()
+                end
+            end
+        end
+        c.origem = textoOrigem(c)
+        grupo.total += 1
+        grupo.conta.Text = "x" .. grupo.total
+        table.insert(grupo.chamadas, c)
+        if #grupo.chamadas > MAX_CHAMADAS then
+            table.remove(grupo.chamadas, 1)
+        end
+        if grupo == selecionado then
+            table.insert(novosSel, c)
+        end
     end
 
     task.spawn(function()
         while ativo do
-            for rf in pairs(funcoes) do
-                pcall(vigiarCallback, rf)
+            if #fila > 0 then
+                local lote = fila
+                fila = {}
+                table.clear(novosSel)
+                for _, c in ipairs(lote) do
+                    local ok, err = pcall(processar, c)
+                    if not ok then
+                        warn("[Remote Log] " .. tostring(err))
+                    end
+                end
+                -- Só os últimos MAX_CHAMADAS do lote viram cartão.
+                local g = selecionado
+                if g and #novosSel > 0 then
+                    lblInfo.Text = g.classe .. "  ·  " .. g.total .. " calls"
+                    for i = math.max(1, #novosSel - MAX_CHAMADAS + 1), #novosSel do
+                        local ok, err = pcall(adicionarCartao, g, novosSel[i])
+                        if not ok then
+                            warn("[Remote Log] " .. tostring(err))
+                        end
+                    end
+                end
+                table.clear(novosSel)
             end
-            task.wait(2)
+            task.wait(0.1)
         end
     end)
-end
+
+    -- Saída: namecall + hookfunction, sem checkcaller, para pegar qualquer origem.
+    -- Os hooks são instalados uma vez por sessão e chamam o handler atual em
+    -- ambiente.__RemoteLogSaida; reexecutar só troca o handler, sem empilhar hooks.
+    ambiente.__RemoteLogSaida = function(self, metodo, ...)
+        -- nil = não rastreado, false = rastreado, true = bloquear
+        if not ativo or typeof(self) ~= "Instance" then
+            return nil
+        end
+        local porClasse = METODOS[self.ClassName]
+        local aba = porClasse and porClasse[metodo]
+        if not aba then
+            return nil
+        end
+        pcall(capturar, aba, metodo, self, nil, ...)
+        return bloqueados[self] ~= nil
+    end
+
+    ambiente.__RemoteLogDentro = ambiente.__RemoteLogDentro or setmetatable({}, { __mode = "k" })
+
+    if hookmetamethod and not ambiente.__RemoteLogNamecall then
+        local ok, err = pcall(function()
+            local dentro = ambiente.__RemoteLogDentro
+            local nomes = NOMES_METODO
+            local oldNamecall
+            oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+                local metodo = getnamecallmethod()
+                local h = ambiente.__RemoteLogSaida
+                if h and nomes[metodo] then
+                    local okH, r = pcall(h, self, metodo, ...)
+                    if okH and r == true then
+                        return nil
+                    end
+                    if okH and r == false then
+                        -- Marca a thread para o hookfunction não registrar a mesma chamada de novo.
+                        local thread = coroutine.running()
+                        dentro[thread] = self
+                        local res = table.pack(oldNamecall(self, ...))
+                        dentro[thread] = nil
+                        return table.unpack(res, 1, res.n)
+                    end
+                end
+                return oldNamecall(self, ...)
+            end))
+        end)
+        if ok then
+            ambiente.__RemoteLogNamecall = true
+        else
+            warn("[Remote Log] namecall hook: " .. tostring(err))
+        end
+    end
+
+    local function hookar(classe, metodo)
+        local feitos = ambiente.__RemoteLogFuncoes
+        if not feitos then
+            feitos = {}
+            ambiente.__RemoteLogFuncoes = feitos
+        end
+        local alvo = Instance.new(classe)[metodo]
+        if feitos[alvo] then
+            return
+        end
+        local dentro = ambiente.__RemoteLogDentro
+        local old
+        old = hookfunction(alvo, wrap(function(self, ...)
+            local thread = coroutine.running()
+            if dentro[thread] == self then
+                dentro[thread] = nil -- já capturado no namecall
+                return old(self, ...)
+            end
+            local h = ambiente.__RemoteLogSaida
+            if h then
+                local okH, r = pcall(h, self, metodo, ...)
+                if okH and r == true then
+                    return nil
+                end
+            end
+            return old(self, ...)
+        end))
+        feitos[alvo] = true
+    end
+
+    if hookfunction then
+        for classe, metodos in pairs(METODOS) do
+            for metodo in pairs(metodos) do
+                local ok, err = pcall(hookar, classe, metodo)
+                if not ok then
+                    warn("[Remote Log] hook " .. classe .. "." .. metodo .. ": " .. tostring(err))
+                end
+            end
+        end
+    end
+
+    -- Entrada: OnClientEvent de todos os remotes e callbacks de RemoteFunction.
+    local vistos = setmetatable({}, { __mode = "k" })
+    local funcoes = setmetatable({}, { __mode = "k" })
+    local pendentes = setmetatable({}, { __mode = "k" }) -- [remote] = os.clock() em que apareceu
+
+    ambiente.__RemoteLogEntrada = function(rf, ...)
+        pcall(capturar, "entrada", "OnClientInvoke", rf, "Server", ...)
+    end
+
+    local function observar(inst, inicial)
+        if vistos[inst] then
+            return
+        end
+        local classe = inst.ClassName
+        if classe == "RemoteEvent" or classe == "UnreliableRemoteEvent" then
+            vistos[inst] = true
+            -- Sem getconnections, remotes já existentes conectam na hora; os novos esperam 3 s.
+            pendentes[inst] = inicial and -math.huge or os.clock()
+        elseif classe == "RemoteFunction" then
+            vistos[inst] = true
+            funcoes[inst] = true
+        end
+    end
+
+    -- Eventos que chegam antes de qualquer listener ficam numa fila e vão para o primeiro
+    -- que conectar. Só conectar depois do jogo, para não roubar essa fila.
+    local function tentarConectar(inst)
+        if getconnections then
+            if #getconnections(inst.OnClientEvent) == 0 then
+                return
+            end
+        elseif os.clock() - pendentes[inst] < 3 then
+            return
+        end
+        pendentes[inst] = nil
+        conexoesEntrada[inst] = inst.OnClientEvent:Connect(function(...)
+            pcall(capturar, "entrada", "OnClientEvent", inst, "Server", ...)
+        end)
+    end
+
+    local function vigiarCallback(rf)
+        local cb = getcallbackvalue(rf, "OnClientInvoke")
+        local feitos = ambiente.__RemoteLogCallbacks
+        if not feitos then
+            feitos = setmetatable({}, { __mode = "k" })
+            ambiente.__RemoteLogCallbacks = feitos
+        end
+        if type(cb) ~= "function" or feitos[cb] then
+            return
+        end
+        local old
+        local function gancho(...)
+            local h = ambiente.__RemoteLogEntrada
+            if h then
+                pcall(h, rf, ...)
+            end
+            return old(...)
+        end
+        local ok = pcall(function()
+            old = hookfunction(cb, wrap(gancho))
+        end)
+        if not ok then
+            old = hookfunction(cb, gancho) -- alguns executores não aceitam C closure em função Lua
+        end
+        feitos[cb] = true
+    end
+
+    for _, inst in ipairs(game:GetDescendants()) do
+        pcall(observar, inst, true)
+    end
+    if getnilinstances then
+        for _, inst in ipairs(getnilinstances()) do
+            pcall(observar, inst, true)
+        end
+    end
+    table.insert(conexoes, game.DescendantAdded:Connect(function(inst)
+        pcall(observar, inst, false)
+    end))
+
+    task.spawn(function()
+        local podeCallback = getcallbackvalue and hookfunction
+        local passo = 0
+        while ativo do
+            for inst in pairs(pendentes) do
+                pcall(tentarConectar, inst)
+            end
+            passo += 1
+            if passo % 4 == 0 then
+                if podeCallback then
+                    for rf in pairs(funcoes) do
+                        pcall(vigiarCallback, rf)
+                    end
+                end
+                -- Remotes destruídos já perderam a conexão: tirar da tabela.
+                for inst, conexao in pairs(conexoesEntrada) do
+                    if not conexao.Connected then
+                        conexoesEntrada[inst] = nil
+                    end
+                end
+            end
+            task.wait(0.5)
+        end
+    end)
+end -- captura
